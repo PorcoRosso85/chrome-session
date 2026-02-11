@@ -1,0 +1,15 @@
+{
+  "name": "session-download-commits-sidepanel",
+  "version": "0.4.4",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "check": "tsc -p tsconfig.json && node scripts/test-urn.mjs && oxlint .",
+    "lint": "oxlint .",
+    "test:unit": "tsc -p tsconfig.json && node scripts/test-urn.mjs"
+  },
+  "devDependencies": {
+    "oxlint": "^1.46.0"
+  }
+}
