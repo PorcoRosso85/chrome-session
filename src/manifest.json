@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Session Download Commits (Side Panel)",
-  "version": "0.4.4",
-  "description": "Track downloads per session URL and build commit-like history. Side Panel UI.",
+  "version": "0.5.0",
+  "description": "Track downloads per session URL and navigate by URN containers. Side Panel UI.",
   "permissions": [
     "clipboardWrite",
     "downloads",

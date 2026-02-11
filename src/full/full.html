@@ -81,11 +81,11 @@
       padding:10px;
     }
     .colTree{
-      width:300px;
+      width:340px;
       border-right:1px solid rgba(233,238,245,.10);
     }
     .colSessions{
-      width:420px;
+      width:440px;
       border-right:1px solid rgba(233,238,245,.10);
     }
     .colDetails{
@@ -100,32 +100,99 @@
       user-select:none;
     }
 
-    .treeNode{
+    .crumbs{
+      display:flex;
+      gap:6px;
+      align-items:center;
+      overflow:auto;
+      white-space:nowrap;
+      padding:6px 6px;
+      margin:0 0 8px;
+      border:1px solid rgba(233,238,245,.10);
+      background:rgba(233,238,245,.03);
+      border-radius:12px;
+    }
+    .crumb{
+      font-size:11px;
+      color:var(--muted);
+      cursor:pointer;
+      user-select:none;
+      border:1px solid transparent;
+      padding:2px 6px;
+      border-radius:8px;
+      font-family:var(--mono);
+    }
+    .crumb:hover{
+      border-color:rgba(233,238,245,.12);
+      background:rgba(233,238,245,.03);
+      color:var(--fg);
+    }
+    .crumb.active{
+      color:var(--fg);
+      border-color:rgba(154,211,255,.35);
+      background:rgba(154,211,255,.06);
+    }
+    .sep{ color:rgba(233,238,245,.25); user-select:none; }
+
+    .trow{
+      display:flex;
+      align-items:center;
+      gap:6px;
       border:1px solid rgba(233,238,245,.10);
       background:rgba(233,238,245,.03);
       border-radius:10px;
-      padding:8px 10px;
+      padding:6px 8px;
       margin:6px 0;
       cursor:pointer;
       user-select:none;
+      min-width:0;
     }
-    .treeNode:hover{ background:rgba(233,238,245,.08); }
-    .treeNode.selected{ border-color:rgba(154,211,255,.45); }
-
-    .treeLabel{
-      font-family:var(--mono);
+    .trow:hover{ background:rgba(233,238,245,.08); }
+    .trow.selected{ border-color:rgba(154,211,255,.45); }
+    .twisty{
+      width:18px;
+      height:18px;
+      border-radius:8px;
+      border:1px solid rgba(233,238,245,.12);
+      background:rgba(233,238,245,.02);
+      color:rgba(233,238,245,.65);
+      display:flex;
+      align-items:center;
+      justify-content:center;
       font-size:11px;
+      cursor:pointer;
+      flex:0 0 auto;
+    }
+    .twisty:disabled{
+      opacity:.35;
+      cursor:default;
+    }
+    .tlabel{
+      font-size:11px;
+      font-family:var(--mono);
       color:var(--fg);
       overflow:hidden;
       text-overflow:ellipsis;
       white-space:nowrap;
+      min-width:0;
+      flex:1;
     }
-    .treeMeta{
-      margin-top:4px;
+    .tchips{
+      display:flex;
+      gap:6px;
+      flex:0 0 auto;
+    }
+    .chip{
       font-size:10px;
-      color:var(--muted);
+      color:rgba(233,238,245,.58);
       font-family:var(--mono);
+      border:1px solid rgba(233,238,245,.14);
+      background:rgba(233,238,245,.02);
+      border-radius:999px;
+      padding:2px 6px;
+      white-space:nowrap;
     }
+    .chip strong{ color:var(--fg); font-weight:700; }
 
     .card{
       border:1px solid rgba(233,238,245,.14);
@@ -238,7 +305,11 @@
       color:var(--muted);
       font-family:var(--mono);
     }
-    .pill strong{ color:var(--fg); font-weight:700; }
+    .pill strong{
+      color:var(--fg);
+      font-weight:700;
+      font-family:var(--mono);
+    }
     .kbd{
       font-family:var(--mono);
       font-size:10px;
@@ -248,33 +319,24 @@
       border-radius:8px;
       padding:1px 6px;
     }
-    @media (max-width: 980px){
-      .colTree{ display:none; }
-      .colSessions{ width:360px; }
-    }
-    @media (max-width: 780px){
-      .main{ flex-direction:column; }
-      .colSessions{ width:auto; border-right:none; border-bottom:1px solid rgba(233,238,245,.10); }
-      .commits{ height:auto; }
-    }
   </style>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">Session DL — Full</div>
-    <div class="search" title="Ctrl+Pで検索 / Escで閉じる(戻る)">
+    <div class="brand">Session DL (Full)</div>
+    <div class="search" title="Ctrl+Pで検索 / >close で閉じて戻る">
       <span style="opacity:.75">🔎</span>
-      <input id="q" placeholder="Search… 例: urn:sessions file:zip after:2026-02-01 / >close" />
+      <input id="q" placeholder="Search… 例: session:chatgpt file:zip urn:sessions on:2026-02-10 / >close" />
       <span class="hint">Ctrl+P</span>
     </div>
-    <span class="kbd">Esc</span>
   </header>
 
   <main class="main">
-    <aside class="col colTree">
-      <div class="sectionTitle">URN tree</div>
+    <section class="col colTree">
+      <div class="sectionTitle">URN containers</div>
+      <div id="crumbs" class="crumbs"></div>
       <div id="tree"></div>
-    </aside>
+    </section>
 
     <section class="col colSessions">
       <div class="sectionTitle">Sessions</div>

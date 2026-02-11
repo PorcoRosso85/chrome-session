@@ -1,6 +1,7 @@
 import { parseQuery, commitMatches, sessionMatchesWithoutCommits, type CommitRec, type SessionRec } from "./lib/query.js";
-import { formatLocal } from "./lib/util.js";
+import { formatLocal, localDateKey } from "./lib/util.js";
 import { getSync, setSync } from "./lib/storage.js";
+import { buildUrnContainerTree, matchesUrnPrefix, prefixToBreadcrumb, ancestorsInclusive, type TreeModel, type TreeNode } from "./lib/tree.js";
 
 const LOCAL_SESSIONS = "sessions";
 const LOCAL_COMMITS = "commits";
@@ -29,7 +30,13 @@ function $(id: string): HTMLElement {
 
 const input = $("q") as HTMLInputElement;
 const urnOnlyBox = $("urnOnly") as HTMLInputElement;
-const list = $("list");
+
+const crumbsHost = $("crumbs");
+const treeMeta = $("treeMeta");
+const sessionsMeta = $("sessionsMeta");
+const treeHost = $("tree");
+const sessionsHost = $("sessions");
+
 const sheet = $("sheet");
 const sheetTitle = $("sheetTitle");
 const sheetSub = $("sheetSub");
@@ -44,7 +51,11 @@ let state: LocalState = {
   settings: { urnOnly: true }
 };
 
+let selectedPrefix: string | null = null;
 let selectedSessionId: string | null = null;
+
+const collapsed = new Set<string>();
+let collapsedInitialized = false;
 
 let showCheat = false;
 
@@ -57,13 +68,12 @@ function stableSessionsArray(sessions: Record<string, SessionRec>): SessionRec[]
 }
 
 function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c] || c));
+  return s.replace(/[&<>\"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c] || c));
 }
 
 function hostFromUrl(url: string): string {
   try { return new URL(url).host; } catch { return url; }
 }
-
 
 function isHttp(url: string): boolean {
   return url.startsWith("http://") || url.startsWith("https://");
@@ -78,6 +88,11 @@ function shortUrl(url: string): string {
   } catch {
     return url;
   }
+}
+
+function shortDate(tsIso: string | null | undefined): string {
+  const k = localDateKey(tsIso);
+  return k || "";
 }
 
 function buildNamingContractText(): string {
@@ -133,7 +148,6 @@ async function sha256Hex(inputStr: string): Promise<string> {
 }
 
 async function copyToClipboard(text: string): Promise<boolean> {
-  // Try modern API first.
   try {
     await navigator.clipboard.writeText(text);
     return true;
@@ -141,7 +155,6 @@ async function copyToClipboard(text: string): Promise<boolean> {
     // fallthrough
   }
 
-  // Fallback: execCommand('copy')
   try {
     const ta = document.createElement("textarea");
     ta.value = text;
@@ -182,7 +195,6 @@ async function runCommand(cmd: string): Promise<void> {
     await chrome.storage.local.set({ [LOCAL_BACKUP_PROOF]: { createdAt: new Date().toISOString(), hash } });
     state.backupProof = { createdAt: new Date().toISOString(), hash };
 
-    // Open Gmail compose (no body; paste manually)
     const subject = encodeURIComponent(`SessionDL backup ${new Date().toISOString()}`);
     const url = `https://mail.google.com/mail/?view=cm&fs=1&su=${subject}`;
     chrome.tabs.create({ url });
@@ -197,7 +209,7 @@ async function runCommand(cmd: string): Promise<void> {
       alert("Clipboardにコピーできませんでした。権限/ポリシーを確認してください。");
       return;
     }
-    alert("命名規約（URNトークン）をClipboardにコピーしました。セッションに貼り付けて使ってください。\n\nCommand: >naming");
+    alert("命名規約（URNトークン）をClipboardにコピーしました。セッションに貼り付けて使ってください。");
     return;
   }
 
@@ -207,10 +219,11 @@ async function runCommand(cmd: string): Promise<void> {
       alert("clearはブロックされています。先に >backup を実行してください。");
       return;
     }
-    // Clear only our keys.
     await chrome.storage.local.remove([LOCAL_SESSIONS, LOCAL_COMMITS, "pending", LOCAL_UI, "fullReturn", LOCAL_BACKUP_PROOF]);
+    selectedPrefix = null;
     selectedSessionId = null;
     await reload();
+    render();
     return;
   }
 
@@ -245,7 +258,6 @@ async function reload(): Promise<void> {
   state.uiQuery = String((got[LOCAL_UI] && (got[LOCAL_UI] as any).query) || "");
   state.backupProof = (got[LOCAL_BACKUP_PROOF] as any) || null;
 
-  // Settings are small and safe to sync.
   try {
     const gotSync = await getSync<{ [k: string]: unknown }>([SYNC_SETTINGS]);
     const raw = (gotSync[SYNC_SETTINGS] as any) || {};
@@ -256,133 +268,129 @@ async function reload(): Promise<void> {
 
   urnOnlyBox.checked = state.settings.urnOnly;
 
-  // Keep input in sync unless the user is typing.
   if (document.activeElement !== input) input.value = state.uiQuery;
 }
 
-function render(): void {
-  const q = parseQuery(input.value);
-  if (q.command) {
-    renderCommandHint(q.command);
+function initCollapsedDefault(model: TreeModel): void {
+  if (collapsedInitialized) return;
+  for (const n of model.byId.values()) {
+    if (n.depth >= 2 && n.children.length > 0) collapsed.add(n.id);
+  }
+  collapsedInitialized = true;
+}
+
+function ensureSelectionVisible(model: TreeModel): void {
+  if (!selectedPrefix) return;
+  if (!model.byId.has(selectedPrefix)) selectedPrefix = null;
+}
+
+function expandSelectionPath(model: TreeModel): void {
+  if (!selectedPrefix) return;
+  const path = ancestorsInclusive(model, selectedPrefix);
+  for (const id of path) collapsed.delete(id);
+}
+
+function scrollNodeIntoView(prefix: string | null): void {
+  if (!prefix) return;
+  requestAnimationFrame(() => {
+    const el = treeHost.querySelector(`[data-node="${CSS.escape(prefix)}"]`) as HTMLElement | null;
+    if (el) el.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function renderCrumbs(): void {
+  const crumbs = prefixToBreadcrumb(selectedPrefix);
+  crumbsHost.innerHTML = "";
+  const activeId = selectedPrefix || "__all__";
+
+  for (let i = 0; i < crumbs.length; i += 1) {
+    const c = crumbs[i];
+    const span = document.createElement("span");
+    span.className = "crumb" + (c.id === activeId ? " active" : "");
+    span.textContent = c.label;
+    span.addEventListener("click", () => {
+      if (c.id === "__all__") selectedPrefix = null;
+      else selectedPrefix = c.id;
+      selectedSessionId = null;
+      render();
+      scrollNodeIntoView(selectedPrefix);
+    });
+    crumbsHost.appendChild(span);
+
+    if (i < crumbs.length - 1) {
+      const sep = document.createElement("span");
+      sep.className = "sep";
+      sep.textContent = "›";
+      crumbsHost.appendChild(sep);
+    }
+  }
+}
+
+function renderTree(model: TreeModel): void {
+  treeHost.innerHTML = "";
+
+  if (model.roots.length === 0) {
+    const div = document.createElement("div");
+    div.className = "empty";
+    div.textContent = "コンテナがありません（まだダウンロードがありません）";
+    treeHost.appendChild(div);
     return;
   }
 
-  const sessionsArr = stableSessionsArray(state.sessions);
-  const sessionById = state.sessions;
+  for (const r of model.roots) renderTreeNode(r);
+}
 
-  // Filter commits first (for commit-level filters)
-  const matchingCommits: CommitRec[] = [];
-  const sessionsFromCommits = new Set<string>();
-  for (const c of state.commits) {
-    if (!c.sessionId) continue;
-    const s = sessionById[c.sessionId] || null;
-    if (!s) continue;
-    if (commitMatches(q, c, s)) {
-      matchingCommits.push(c);
-      sessionsFromCommits.add(c.sessionId);
-    }
-  }
+function renderTreeNode(n: TreeNode): void {
+  const row = document.createElement("div");
+  row.className = "trow" + (selectedPrefix === n.prefix ? " selected" : "");
+  row.dataset.node = n.prefix;
+  row.style.marginLeft = `${n.depth * 10}px`;
 
-  const filteredSessions: SessionRec[] = [];
-  for (const s of sessionsArr) {
-    if (sessionsFromCommits.has(s.id) || sessionMatchesWithoutCommits(q, s)) {
-      filteredSessions.push(s);
-    }
-  }
-
-  // If current selection is no longer visible, close sheet.
-  if (selectedSessionId && !filteredSessions.some((s) => s.id === selectedSessionId)) {
-    selectedSessionId = null;
-  }
-
-  list.innerHTML = "";
-  if (showCheat) {
-    const div = document.createElement("div");
-    div.className = "empty";
-    div.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-        <div><strong>Command palette</strong> <span class="kbd">Enter</span> to run</div>
-        <div class="kbd">type: &gt;cmd</div>
-      </div>
-      <div style="margin-top:8px;line-height:1.6">
-        <div><span class="kbd">&gt;naming</span> 命名規約（URNトークン）をClipboardへコピー</div>
-        <div><span class="kbd">&gt;full</span> フル幅ビューを開く（閉じたら戻る）</div>
-        <div><span class="kbd">&gt;backup</span> Clipboardコピー → Gmailを開く</div>
-        <div><span class="kbd">&gt;clear</span> 先にbackup済みのときのみ全削除</div>
-        <div><span class="kbd">&gt;close</span> パネルを閉じる</div>
-      </div>
-      <div style="margin-top:10px;line-height:1.6">
-        <div><strong>Search keys</strong>（スペース区切りで複数指定可）</div>
-        <div><span class="kbd">session:chatgpt</span> / <span class="kbd">file:.zip</span> / <span class="kbd">urn:sessions</span></div>
-        <div><span class="kbd">on:2026-02-10</span> / <span class="kbd">after:2026-02-01</span> / <span class="kbd">before:2026-02-28</span></div>
-        <div><span class="kbd">is:unknown</span>（URNなしのみ）</div>
-      </div>`;
-    list.appendChild(div);
-  }
-  if (filteredSessions.length === 0) {
-    const div = document.createElement("div");
-    div.className = "empty";
-    div.innerHTML = `
-      <div>該当なし</div>
-      <div style="margin-top:6px">
-        - ダウンロードすると自動でセッションが作成されます<br/>
-        - Ctrl+P で検索<br/>
-        - <span class="kbd">&gt;naming</span> で命名規約をClipboardへコピー<br/>
-        - <span class="kbd">&gt;full</span> でフル幅ビュー<br/>
-        - <span class="kbd">&gt;backup</span> でGmailバックアップ
-      </div>`;
-    list.appendChild(div);
+  const twisty = document.createElement("button");
+  twisty.className = "twisty";
+  const hasChildren = n.children.length > 0;
+  if (!hasChildren) {
+    twisty.textContent = "•";
+    twisty.disabled = true;
   } else {
-    for (const s of filteredSessions) {
-      const card = document.createElement("div");
-      card.className = "card" + (s.id === selectedSessionId ? " selected" : "");
-      card.tabIndex = 0;
-
-      const title = s.title || hostFromUrl(s.url);
-      const sub = shortUrl(s.url);
-      const last = s.lastDownloadAt || s.lastSeenAt || s.createdAt;
-
-      const known = countKnownUrnForSession(s.id);
-      const unknown = countUnknownUrnForSession(s.id);
-
-      card.innerHTML = `
-        <div class="row">
-          <div class="title">${escapeHtml(title)}</div>
-        </div>
-        <div class="sub">${escapeHtml(sub)}</div>
-        <div class="meta">
-          <span class="pill"><strong>${s.downloadCount || 0}</strong> commits</span>
-          <span class="pill"><strong>${known}</strong> urn</span>
-          <span class="pill"><strong>${unknown}</strong> unknown</span>
-          <span class="pill">${escapeHtml(formatLocal(last))}</span>
-        </div>
-      `;
-
-      card.addEventListener("click", () => {
-        showCheat = false;
-        if (selectedSessionId === s.id) {
-          selectedSessionId = null;
-        } else {
-          selectedSessionId = s.id;
-        }
-        render();
-      });
-
-      card.addEventListener("dblclick", async () => {
-        if (isHttp(s.url)) await chrome.runtime.sendMessage({ type: "FOCUS_OR_OPEN_URL", url: s.url });
-      });
-
-      card.addEventListener("keydown", async (ev) => {
-        if (ev.key === "Enter") {
-          if (isHttp(s.url)) await chrome.runtime.sendMessage({ type: "FOCUS_OR_OPEN_URL", url: s.url });
-        }
-      });
-
-      list.appendChild(card);
-    }
+    twisty.textContent = collapsed.has(n.id) ? "▸" : "▾";
+    twisty.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (collapsed.has(n.id)) collapsed.delete(n.id);
+      else collapsed.add(n.id);
+      render();
+    });
   }
 
-  renderSheet(q);
+  const label = document.createElement("div");
+  label.className = "tlabel";
+  label.textContent = n.depth === 0 ? n.label : n.label;
+  label.title = n.prefix;
+
+  const chips = document.createElement("div");
+  chips.className = "tchips";
+  chips.innerHTML = `
+    <span class="chip"><strong>S:${n.sessionCount}</strong></span>
+    <span class="chip"><strong>C:${n.commitCount}</strong></span>
+    <span class="chip">Last:${escapeHtml(shortDate(n.lastAt))}</span>
+  `;
+
+  row.appendChild(twisty);
+  row.appendChild(label);
+  row.appendChild(chips);
+
+  row.addEventListener("click", () => {
+    showCheat = false;
+    selectedPrefix = (selectedPrefix === n.prefix) ? null : n.prefix;
+    selectedSessionId = null;
+    render();
+    scrollNodeIntoView(selectedPrefix);
+  });
+
+  treeHost.appendChild(row);
+
+  if (collapsed.has(n.id)) return;
+  for (const c of n.children) renderTreeNode(c);
 }
 
 function countKnownUrnForSession(sessionId: string): number {
@@ -404,7 +412,7 @@ function countUnknownUrnForSession(sessionId: string): number {
 }
 
 function renderCommandHint(cmd: string): void {
-  list.innerHTML = "";
+  sessionsHost.innerHTML = "";
   const div = document.createElement("div");
   div.className = "empty";
   div.innerHTML = `
@@ -416,9 +424,164 @@ function renderCommandHint(cmd: string): void {
       <div><span class="kbd">&gt;clear</span> 先にbackup済みのときのみ全削除</div>
       <div><span class="kbd">&gt;close</span> パネルを閉じる</div>
     </div>`;
-  list.appendChild(div);
-
+  sessionsHost.appendChild(div);
   sheet.classList.remove("open");
+}
+
+function render(): void {
+  const q = parseQuery(input.value);
+
+  // Build tree from matching commits when searching; hide non-matching containers.
+  const treeCommits: CommitRec[] = [];
+  if (!q.raw || q.command) {
+    treeCommits.push(...state.commits);
+  } else {
+    for (const c of state.commits) {
+      if (!c.sessionId) continue;
+      const s = state.sessions[c.sessionId] || null;
+      if (!s) continue;
+      if (commitMatches(q, c, s)) treeCommits.push(c);
+    }
+  }
+  const includeUnknown = treeCommits.some((c) => !c.urn);
+  const model = buildUrnContainerTree(treeCommits, state.sessions, { includeUnknown });
+
+  initCollapsedDefault(model);
+  ensureSelectionVisible(model);
+  expandSelectionPath(model);
+
+  renderCrumbs();
+
+  // meta
+  const uniqSessions = new Set<string>();
+  for (const c of treeCommits) if (c.sessionId) uniqSessions.add(c.sessionId);
+  treeMeta.textContent = `S:${uniqSessions.size} C:${treeCommits.length}`;
+
+  renderTree(model);
+
+  if (q.command) {
+    renderCommandHint(q.command);
+    return;
+  }
+
+  const sessionsArr = stableSessionsArray(state.sessions);
+  const sessionById = state.sessions;
+
+  // Filter commits for sessions list (selection-aware)
+  const sessionsFromCommits = new Set<string>();
+  for (const c of state.commits) {
+    if (!c.sessionId) continue;
+    const s = sessionById[c.sessionId] || null;
+    if (!s) continue;
+
+    if (selectedPrefix) {
+      if (selectedPrefix === "__unknown__") {
+        if (c.urn) continue;
+      } else {
+        if (!c.urn || !matchesUrnPrefix(c.urn, selectedPrefix)) continue;
+      }
+    }
+
+    if (commitMatches(q, c, s)) sessionsFromCommits.add(c.sessionId);
+  }
+
+  const filteredSessions: SessionRec[] = [];
+  for (const s of sessionsArr) {
+    if (selectedPrefix) {
+      if (sessionsFromCommits.has(s.id)) filteredSessions.push(s);
+    } else {
+      if (sessionsFromCommits.has(s.id) || sessionMatchesWithoutCommits(q, s)) filteredSessions.push(s);
+    }
+  }
+
+  if (selectedSessionId && !filteredSessions.some((s) => s.id === selectedSessionId)) selectedSessionId = null;
+
+  sessionsHost.innerHTML = "";
+
+  // Cheat sheet on Ctrl+P
+  if (showCheat) {
+    const div = document.createElement("div");
+    div.className = "empty";
+    div.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div><strong>Commands</strong> <span class="kbd">Enter</span> to run</div>
+        <div class="kbd">type: &gt;cmd</div>
+      </div>
+      <div style="margin-top:8px;line-height:1.6">
+        <div><span class="kbd">&gt;naming</span> 命名規約（URNトークン）をClipboardへコピー</div>
+        <div><span class="kbd">&gt;full</span> フル幅ビューを開く（閉じたら戻る）</div>
+        <div><span class="kbd">&gt;backup</span> Clipboardコピー → Gmailを開く</div>
+        <div><span class="kbd">&gt;clear</span> 先にbackup済みのときのみ全削除</div>
+        <div><span class="kbd">&gt;close</span> パネルを閉じる</div>
+      </div>
+      <div style="margin-top:10px;line-height:1.6">
+        <div><strong>Search keys</strong></div>
+        <div><span class="kbd">session:chatgpt</span> / <span class="kbd">file:.zip</span> / <span class="kbd">urn:sessions</span></div>
+        <div><span class="kbd">on:2026-02-10</span> / <span class="kbd">after:2026-02-01</span> / <span class="kbd">before:2026-02-28</span></div>
+        <div><span class="kbd">is:unknown</span>（URNなしのみ）</div>
+      </div>`;
+    sessionsHost.appendChild(div);
+  }
+
+  if (filteredSessions.length === 0) {
+    const div = document.createElement("div");
+    div.className = "empty";
+    div.innerHTML = selectedPrefix
+      ? `このコンテナ配下で該当なし（検索条件）<br/><span class="kbd">All</span>（パンくず）をクリックしてフィルタ解除できます。`
+      : `該当なし`;
+    sessionsHost.appendChild(div);
+    sessionsMeta.textContent = "shown:0";
+    renderSheet(q);
+    return;
+  }
+
+  sessionsMeta.textContent = `shown:${filteredSessions.length}`;
+
+  for (const s of filteredSessions) {
+    const card = document.createElement("div");
+    card.className = "card" + (s.id === selectedSessionId ? " selected" : "");
+    card.tabIndex = 0;
+
+    const title = s.title || hostFromUrl(s.url);
+    const sub = shortUrl(s.url);
+    const last = s.lastDownloadAt || s.lastSeenAt || s.createdAt;
+
+    const known = countKnownUrnForSession(s.id);
+    const unknown = countUnknownUrnForSession(s.id);
+
+    card.innerHTML = `
+      <div class="row">
+        <div class="title">${escapeHtml(title)}</div>
+      </div>
+      <div class="sub">${escapeHtml(sub)}</div>
+      <div class="meta">
+        <span class="pill"><strong>${s.downloadCount || 0}</strong> commits</span>
+        <span class="pill"><strong>${known}</strong> urn</span>
+        <span class="pill"><strong>${unknown}</strong> unknown</span>
+        <span class="pill">${escapeHtml(formatLocal(last))}</span>
+      </div>
+    `;
+
+    card.addEventListener("click", () => {
+      showCheat = false;
+      selectedSessionId = selectedSessionId === s.id ? null : s.id;
+      render();
+    });
+
+    card.addEventListener("dblclick", async () => {
+      if (isHttp(s.url)) await chrome.runtime.sendMessage({ type: "FOCUS_OR_OPEN_URL", url: s.url });
+    });
+
+    card.addEventListener("keydown", async (ev) => {
+      if (ev.key === "Enter") {
+        if (isHttp(s.url)) await chrome.runtime.sendMessage({ type: "FOCUS_OR_OPEN_URL", url: s.url });
+      }
+    });
+
+    sessionsHost.appendChild(card);
+  }
+
+  renderSheet(q);
 }
 
 function renderSheet(q: ReturnType<typeof parseQuery>): void {
@@ -442,11 +605,20 @@ function renderSheet(q: ReturnType<typeof parseQuery>): void {
   sheetHelp.innerHTML = `
     - Click: select / Enter or double-click: open session<br/>
     - Esc: close sheet → Esc again: close panel<br/>
-    - 検索はセッション/ファイル/URN/日付で絞り込み可能`;
+    - Tree selection + search で絞り込み`;
 
   const commits: CommitRec[] = [];
   for (const c of state.commits) {
     if (c.sessionId !== selectedSessionId) continue;
+
+    if (selectedPrefix) {
+      if (selectedPrefix === "__unknown__") {
+        if (c.urn) continue;
+      } else {
+        if (!c.urn || !matchesUrnPrefix(c.urn, selectedPrefix)) continue;
+      }
+    }
+
     if (!commitMatches(q, c, s)) continue;
     commits.push(c);
   }
@@ -519,7 +691,6 @@ window.addEventListener("keydown", (ev) => {
   }
 
   if (ev.key === "Escape") {
-    // 1st Esc: close sheet if open; 2nd: close panel
     if (selectedSessionId) {
       selectedSessionId = null;
       render();
@@ -540,8 +711,6 @@ chrome.storage.onChanged.addListener((_changes: any, area: string) => {
 async function init(): Promise<void> {
   await reload();
   input.value = state.uiQuery;
-
-  // Initial render
   render();
 }
 

@@ -1,6 +1,6 @@
 import { parseQuery, commitMatches, sessionMatchesWithoutCommits, type CommitRec, type SessionRec } from "./lib/query.js";
-import { formatLocal } from "./lib/util.js";
-import { urnToSegments } from "./lib/urn.js";
+import { formatLocal, localDateKey } from "./lib/util.js";
+import { buildUrnContainerTree, matchesUrnPrefix, prefixToBreadcrumb, ancestorsInclusive, type TreeModel, type TreeNode } from "./lib/tree.js";
 
 const LOCAL_SESSIONS = "sessions";
 const LOCAL_COMMITS = "commits";
@@ -12,16 +12,6 @@ type LocalState = {
   uiQuery: string;
 };
 
-type TreeNode = {
-  id: string;
-  label: string;
-  prefix: string;
-  depth: number;
-  commitCount: number;
-  sessionCount: number;
-  children: TreeNode[];
-};
-
 function $(id: string): HTMLElement {
   const el = document.getElementById(id);
   if (!el) throw new Error(`missing #${id}`);
@@ -29,6 +19,7 @@ function $(id: string): HTMLElement {
 }
 
 const input = $("q") as HTMLInputElement;
+const crumbsHost = $("crumbs");
 const treeHost = $("tree");
 const sessionsHost = $("sessions");
 const detailsHost = $("details");
@@ -38,7 +29,9 @@ let state: LocalState = { sessions: {}, commits: [], uiQuery: "" };
 
 let selectedPrefix: string | null = null; // urn prefix or "__unknown__"
 let selectedSessionId: string | null = null;
+
 const collapsed = new Set<string>();
+let collapsedInitialized = false;
 
 function stableSessionsArray(sessions: Record<string, SessionRec>): SessionRec[] {
   return Object.values(sessions).sort((a, b) => {
@@ -49,138 +42,177 @@ function stableSessionsArray(sessions: Record<string, SessionRec>): SessionRec[]
 }
 
 function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c] || c));
+  return s.replace(/[&<>\"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c] || c));
 }
 
 function hostFromUrl(url: string): string {
   try { return new URL(url).host; } catch { return url; }
 }
 
-
 function isHttp(url: string): boolean {
   return url.startsWith("http://") || url.startsWith("https://");
 }
 
-function matchesPrefix(urn: string, prefix: string): boolean {
-  if (urn === prefix) return true;
-  if (!urn.startsWith(prefix)) return false;
-  const ch = urn.slice(prefix.length, prefix.length + 1);
-  return ch === ":" || ch === "/" || ch === "";
+function shortDate(tsIso: string | null | undefined): string {
+  const k = localDateKey(tsIso);
+  return k || "";
 }
 
-function buildTree(): TreeNode[] {
-  const rootFeat: TreeNode = { id: "urn:feat", label: "urn:feat", prefix: "urn:feat", depth: 0, commitCount: 0, sessionCount: 0, children: [] };
-  const rootTest: TreeNode = { id: "urn:test", label: "urn:test", prefix: "urn:test", depth: 0, commitCount: 0, sessionCount: 0, children: [] };
-  const rootUnknown: TreeNode = { id: "__unknown__", label: "(unknown urn)", prefix: "__unknown__", depth: 0, commitCount: 0, sessionCount: 0, children: [] };
-
-  const byId = new Map<string, TreeNode>();
-  byId.set(rootFeat.id, rootFeat);
-  byId.set(rootTest.id, rootTest);
-
-  // For counting unique sessions per node:
-  const sessionsByNode = new Map<string, Set<string>>();
-
-  function ensureChild(parent: TreeNode, label: string, prefix: string, depth: number): TreeNode {
-    const id = prefix;
-    let n = byId.get(id);
-    if (n) return n;
-    n = { id, label, prefix, depth, commitCount: 0, sessionCount: 0, children: [] };
-    byId.set(id, n);
-    parent.children.push(n);
-    return n;
+function initCollapsedDefault(model: TreeModel): void {
+  if (collapsedInitialized) return;
+  // Default: keep depth>=2 collapsed to stay compact.
+  for (const n of model.byId.values()) {
+    if (n.depth >= 2 && n.children.length > 0) collapsed.add(n.id);
   }
+  collapsedInitialized = true;
+}
 
-  // Build nodes and counts from commits
-  for (const c of state.commits) {
-    const sid = c.sessionId;
-    if (c.urn) {
-      const seg = urnToSegments(c.urn);
-      if (!seg) continue;
-      const root = seg.root; // "urn:feat" or "urn:test"
-      const r = root === "urn:feat" ? rootFeat : rootTest;
-      r.commitCount += 1;
-      if (sid) {
-        if (!sessionsByNode.has(r.id)) sessionsByNode.set(r.id, new Set());
-        sessionsByNode.get(r.id)?.add(sid);
-      }
+function ensureSelectionVisible(model: TreeModel): void {
+  if (!selectedPrefix) return;
+  if (!model.byId.has(selectedPrefix)) {
+    selectedPrefix = null;
+    selectedSessionId = null;
+  }
+}
 
-      let cur = r;
-      let prefix = root;
-      for (const s of seg.segments) {
-        prefix = `${prefix}:${s}`;
-        cur = ensureChild(cur, s, prefix, cur.depth + 1);
-        cur.commitCount += 1;
-        if (sid) {
-          if (!sessionsByNode.has(cur.id)) sessionsByNode.set(cur.id, new Set());
-          sessionsByNode.get(cur.id)?.add(sid);
-        }
-      }
-    } else {
-      rootUnknown.commitCount += 1;
-      if (sid) {
-        if (!sessionsByNode.has(rootUnknown.id)) sessionsByNode.set(rootUnknown.id, new Set());
-        sessionsByNode.get(rootUnknown.id)?.add(sid);
-      }
+function expandSelectionPath(model: TreeModel): void {
+  if (!selectedPrefix) return;
+  const path = ancestorsInclusive(model, selectedPrefix);
+  for (const id of path) collapsed.delete(id);
+}
+
+function scrollNodeIntoView(prefix: string | null): void {
+  if (!prefix) return;
+  requestAnimationFrame(() => {
+    const el = treeHost.querySelector(`[data-node="${CSS.escape(prefix)}"]`) as HTMLElement | null;
+    if (el) el.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function renderCrumbs(): void {
+  const crumbs = prefixToBreadcrumb(selectedPrefix);
+  crumbsHost.innerHTML = "";
+  const activeId = selectedPrefix || "__all__";
+
+  for (let i = 0; i < crumbs.length; i += 1) {
+    const c = crumbs[i];
+    const span = document.createElement("span");
+    span.className = "crumb" + (c.id === activeId ? " active" : "");
+    span.textContent = c.label;
+    span.addEventListener("click", () => {
+      if (c.id === "__all__") selectedPrefix = null;
+      else selectedPrefix = c.id;
+      selectedSessionId = null;
+      renderAll();
+      scrollNodeIntoView(selectedPrefix);
+    });
+    crumbsHost.appendChild(span);
+    if (i < crumbs.length - 1) {
+      const sep = document.createElement("span");
+      sep.className = "sep";
+      sep.textContent = "›";
+      crumbsHost.appendChild(sep);
+    }
+  }
+}
+
+function renderTreeForQuery(): void {
+  const q = parseQuery(input.value);
+
+  // Build tree from matching commits when searching; hide non-matching containers.
+  const baseCommits: CommitRec[] = [];
+  if (!q.raw || q.command) {
+    baseCommits.push(...state.commits);
+  } else {
+    for (const c of state.commits) {
+      if (!c.sessionId) continue;
+      const s = state.sessions[c.sessionId] || null;
+      if (!s) continue;
+      if (commitMatches(q, c, s)) baseCommits.push(c);
     }
   }
 
-  // finalize session counts and sort children
-  function finalize(n: TreeNode): void {
-    n.sessionCount = sessionsByNode.get(n.id)?.size || 0;
-    n.children.sort((a, b) => a.label.localeCompare(b.label));
-    for (const c of n.children) finalize(c);
-  }
-  finalize(rootFeat);
-  finalize(rootTest);
-  finalize(rootUnknown);
+  const includeUnknown = baseCommits.some((c) => !c.urn);
+  const model = buildUrnContainerTree(baseCommits, state.sessions, { includeUnknown });
 
-  const out: TreeNode[] = [rootFeat, rootTest, rootUnknown].filter((n) => n.commitCount > 0 || n.id !== "__unknown__");
-  return out;
-}
+  initCollapsedDefault(model);
+  ensureSelectionVisible(model);
+  expandSelectionPath(model);
 
-function renderTree(): void {
-  const roots = buildTree();
+  renderCrumbs();
+
   treeHost.innerHTML = "";
-
-  for (const r of roots) {
-    renderTreeNode(r);
+  if (model.roots.length === 0) {
+    const div = document.createElement("div");
+    div.style.color = "rgba(233,238,245,.55)";
+    div.style.fontSize = "12px";
+    div.style.lineHeight = "1.45";
+    div.textContent = q.raw ? "該当するコンテナがありません（検索条件）" : "まだデータがありません";
+    treeHost.appendChild(div);
+    return;
   }
+
+  for (const r of model.roots) renderTreeNode(r);
 }
 
 function renderTreeNode(n: TreeNode): void {
-  const div = document.createElement("div");
-  div.className = "treeNode" + (selectedPrefix === n.prefix ? " selected" : "");
-  div.style.marginLeft = `${n.depth * 10}px`;
+  const row = document.createElement("div");
+  row.className = "trow" + (selectedPrefix === n.prefix ? " selected" : "");
+  row.dataset.node = n.prefix;
+  row.style.marginLeft = `${n.depth * 10}px`;
 
-  div.innerHTML = `
-    <div class="treeLabel">${escapeHtml(n.depth === 0 ? n.label : n.label)}</div>
-    <div class="treeMeta">${escapeHtml(n.prefix)} · commits:${n.commitCount} · sessions:${n.sessionCount}</div>
+  const twisty = document.createElement("button");
+  twisty.className = "twisty";
+  const hasChildren = n.children.length > 0;
+  if (!hasChildren) {
+    twisty.textContent = "•";
+    twisty.disabled = true;
+  } else {
+    twisty.textContent = collapsed.has(n.id) ? "▸" : "▾";
+    twisty.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (collapsed.has(n.id)) collapsed.delete(n.id);
+      else collapsed.add(n.id);
+      renderAll();
+    });
+  }
+
+  const label = document.createElement("div");
+  label.className = "tlabel";
+  label.textContent = n.depth === 0 ? n.label : n.label;
+  label.title = n.prefix;
+
+  const chips = document.createElement("div");
+  chips.className = "tchips";
+  chips.innerHTML = `
+    <span class="chip"><strong>S:${n.sessionCount}</strong></span>
+    <span class="chip"><strong>C:${n.commitCount}</strong></span>
+    <span class="chip">Last:${escapeHtml(shortDate(n.lastAt))}</span>
   `;
 
-  div.addEventListener("click", () => {
-    if (selectedPrefix === n.prefix) selectedPrefix = null;
-    else selectedPrefix = n.prefix;
+  row.appendChild(twisty);
+  row.appendChild(label);
+  row.appendChild(chips);
+
+  row.addEventListener("click", () => {
+    selectedPrefix = (selectedPrefix === n.prefix) ? null : n.prefix;
     selectedSessionId = null;
     renderAll();
+    scrollNodeIntoView(selectedPrefix);
   });
 
-  div.addEventListener("dblclick", () => {
-    if (collapsed.has(n.prefix)) collapsed.delete(n.prefix);
-    else collapsed.add(n.prefix);
-    renderAll();
-  });
+  treeHost.appendChild(row);
 
-  treeHost.appendChild(div);
-
-  if (collapsed.has(n.prefix)) return;
+  if (collapsed.has(n.id)) return;
   for (const c of n.children) renderTreeNode(c);
 }
 
 function renderSessionsAndDetails(): void {
   const q = parseQuery(input.value);
   if (q.command) {
-    // Command mode: show nothing special; commands run on Enter.
     renderCommandHint(q.command);
+    sessionsHost.innerHTML = "";
+    commitsHost.innerHTML = "";
     return;
   }
 
@@ -200,7 +232,7 @@ function renderSessionsAndDetails(): void {
       if (selectedPrefix === "__unknown__") {
         if (c.urn) continue;
       } else {
-        if (!c.urn || !matchesPrefix(c.urn, selectedPrefix)) continue;
+        if (!c.urn || !matchesUrnPrefix(c.urn, selectedPrefix)) continue;
       }
     }
 
@@ -213,7 +245,6 @@ function renderSessionsAndDetails(): void {
   const filteredSessions: SessionRec[] = [];
   for (const s of sessionsArr) {
     if (selectedPrefix) {
-      // Tree filter implies commit-level matching, sessions must be backed by commits.
       if (sessionsFromCommits.has(s.id)) filteredSessions.push(s);
     } else {
       if (sessionsFromCommits.has(s.id) || sessionMatchesWithoutCommits(q, s)) filteredSessions.push(s);
@@ -223,33 +254,43 @@ function renderSessionsAndDetails(): void {
   if (selectedSessionId && !filteredSessions.some((s) => s.id === selectedSessionId)) selectedSessionId = null;
 
   sessionsHost.innerHTML = "";
-  for (const s of filteredSessions) {
-    const card = document.createElement("div");
-    card.className = "card" + (s.id === selectedSessionId ? " selected" : "");
-    card.tabIndex = 0;
+  if (filteredSessions.length === 0) {
+    const div = document.createElement("div");
+    div.style.color = "rgba(233,238,245,.55)";
+    div.style.fontSize = "12px";
+    div.style.lineHeight = "1.45";
+    div.textContent = selectedPrefix ? "このコンテナ配下で該当するセッションがありません（検索条件）" : "該当するセッションがありません";
+    sessionsHost.appendChild(div);
+  } else {
+    for (const s of filteredSessions) {
+      const card = document.createElement("div");
+      card.className = "card" + (s.id === selectedSessionId ? " selected" : "");
+      card.tabIndex = 0;
 
-    const title = s.title || hostFromUrl(s.url);
-    card.innerHTML = `
-      <div class="title">${escapeHtml(title)}</div>
-      <div class="sub">${escapeHtml(s.url)}</div>
-    `;
+      const title = s.title || hostFromUrl(s.url);
+      card.innerHTML = `
+        <div class="title">${escapeHtml(title)}</div>
+        <div class="sub">${escapeHtml(s.url)}</div>
+      `;
 
-    card.addEventListener("click", () => {
-      selectedSessionId = selectedSessionId === s.id ? null : s.id;
-      renderAll();
-    });
+      card.addEventListener("click", () => {
+        selectedSessionId = selectedSessionId === s.id ? null : s.id;
+        renderSessionsAndDetails();
+        renderDetails(q);
+      });
 
-    card.addEventListener("dblclick", async () => {
-      if (isHttp(s.url)) await chrome.runtime.sendMessage({ type: "FOCUS_OR_OPEN_URL", url: s.url });
-    });
-
-    card.addEventListener("keydown", async (ev) => {
-      if (ev.key === "Enter") {
+      card.addEventListener("dblclick", async () => {
         if (isHttp(s.url)) await chrome.runtime.sendMessage({ type: "FOCUS_OR_OPEN_URL", url: s.url });
-      }
-    });
+      });
 
-    sessionsHost.appendChild(card);
+      card.addEventListener("keydown", async (ev) => {
+        if (ev.key === "Enter") {
+          if (isHttp(s.url)) await chrome.runtime.sendMessage({ type: "FOCUS_OR_OPEN_URL", url: s.url });
+        }
+      });
+
+      sessionsHost.appendChild(card);
+    }
   }
 
   renderDetails(q);
@@ -287,7 +328,7 @@ function renderDetails(q: ReturnType<typeof parseQuery>): void {
       if (selectedPrefix === "__unknown__") {
         if (c.urn) continue;
       } else {
-        if (!c.urn || !matchesPrefix(c.urn, selectedPrefix)) continue;
+        if (!c.urn || !matchesUrnPrefix(c.urn, selectedPrefix)) continue;
       }
     }
 
@@ -358,7 +399,7 @@ async function reload(): Promise<void> {
 }
 
 function renderAll(): void {
-  renderTree();
+  renderTreeForQuery();
   renderSessionsAndDetails();
 }
 
