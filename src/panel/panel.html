@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Session Downloads</title>
+  <style>
+    :root{
+      --bg:#0b0d10;
+      --fg:#e9eef5;
+      --muted:rgba(233,238,245,.55);
+      --panel:rgba(233,238,245,.06);
+      --stroke:rgba(233,238,245,.18);
+      --accent:rgba(154,211,255,.9);
+      --shadow:0 10px 30px rgba(0,0,0,.35);
+      --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
+      --sans:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family:var(--sans);
+      background:var(--bg);
+      color:var(--fg);
+      overflow:hidden;
+    }
+    .topbar{
+      height:46px;
+      display:flex;
+      align-items:center;
+      gap:10px;
+      padding:0 10px;
+      border-bottom:1px solid rgba(233,238,245,.1);
+      background:#0b0d10eb;
+      position:sticky;
+      top:0;
+      z-index:10;
+    }
+    .brand{
+      font-size:12px;
+      letter-spacing:.2px;
+      color:var(--muted);
+      user-select:none;
+      white-space:nowrap;
+    }
+    .search{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      border:1px solid rgba(233,238,245,.16);
+      background:rgba(233,238,245,.06);
+      border-radius:10px;
+      padding:6px 10px;
+      min-width:120px;
+      flex:1;
+    }
+    .search input{
+      flex:1;
+      border:0;
+      outline:none;
+      background:transparent;
+      color:var(--fg);
+      font-size:12px;
+    }
+    .hint{
+      font-size:11px;
+      color:var(--muted);
+      white-space:nowrap;
+      user-select:none;
+    }
+
+    .toggle{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      border:1px solid rgba(233,238,245,.16);
+      background:rgba(233,238,245,.03);
+      border-radius:999px;
+      padding:5px 8px;
+      font-size:11px;
+      color:var(--muted);
+      user-select:none;
+      white-space:nowrap;
+    }
+    .toggle input{ margin:0; }
+    .toggle b{ color:var(--fg); font-weight:700; }
+
+    .main{
+      height:calc(100% - 46px);
+      display:flex;
+      flex-direction:column;
+      min-height:0;
+    }
+
+    .list{
+      flex:1;
+      overflow:auto;
+      padding:10px;
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+    }
+
+    .card{
+      border:1px solid rgba(233,238,245,.14);
+      background:rgba(233,238,245,.06);
+      border-radius:12px;
+      padding:10px;
+      cursor:pointer;
+      user-select:none;
+    }
+    .card:hover{ background:rgba(233,238,245,.10); }
+    .card.selected{
+      border-color:rgba(154,211,255,.45);
+      box-shadow:0 0 0 1px rgba(154,211,255,.25) inset;
+    }
+    .row{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:8px;
+    }
+    .title{
+      font-size:13px;
+      font-weight:650;
+      line-height:1.2;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      max-width:100%;
+    }
+    .sub{
+      margin-top:4px;
+      font-size:11px;
+      color:var(--muted);
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      font-family:var(--mono);
+    }
+    .meta{
+      margin-top:8px;
+      display:flex;
+      gap:6px;
+      flex-wrap:wrap;
+    }
+    .pill{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      border:1px solid rgba(233,238,245,.16);
+      background:rgba(233,238,245,.03);
+      border-radius:999px;
+      padding:3px 8px;
+      font-size:10px;
+      color:var(--muted);
+      font-family:var(--mono);
+    }
+    .pill strong{
+      color:var(--fg);
+      font-weight:700;
+      font-family:var(--mono);
+    }
+
+    .empty{
+      padding:12px;
+      border:1px dashed rgba(233,238,245,.18);
+      border-radius:12px;
+      color:var(--muted);
+      font-size:12px;
+      line-height:1.45;
+    }
+
+    /* Bottom sheet for details */
+    .sheet{
+      position:fixed;
+      left:0; right:0; bottom:0;
+      height:62%;
+      max-height:520px;
+      background:rgba(11,13,16,.92);
+      border-top:1px solid rgba(233,238,245,.14);
+      backdrop-filter: blur(6px);
+      box-shadow:var(--shadow);
+      transform:translateY(110%);
+      transition:transform .16s ease;
+      z-index:30;
+      display:flex;
+      flex-direction:column;
+      padding:10px;
+    }
+    .sheet.open{ transform:translateY(0); }
+    .sheetHeader{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:10px;
+    }
+    .sheetTitle{
+      font-size:13px;
+      font-weight:750;
+      line-height:1.2;
+      margin:0;
+      padding:0;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      max-width:100%;
+    }
+    .sheetSub{
+      margin-top:4px;
+      font-size:11px;
+      color:var(--muted);
+      font-family:var(--mono);
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .sheetHelp{
+      margin-top:8px;
+      font-size:11px;
+      color:var(--muted);
+      line-height:1.35;
+    }
+    .commits{
+      margin-top:10px;
+      flex:1;
+      overflow:auto;
+      border:1px solid rgba(233,238,245,.10);
+      background:rgba(233,238,245,.03);
+      border-radius:12px;
+      padding:8px;
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+    }
+    .commit{
+      border:1px solid rgba(233,238,245,.10);
+      background:rgba(0,0,0,.10);
+      border-radius:10px;
+      padding:8px;
+    }
+    .commitTop{
+      display:flex;
+      justify-content:space-between;
+      gap:8px;
+    }
+    .commitFile{
+      font-size:12px;
+      font-weight:650;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      max-width:100%;
+    }
+    .commitTime{
+      font-size:10px;
+      color:var(--muted);
+      white-space:nowrap;
+      font-family:var(--mono);
+    }
+    .commitMeta{
+      margin-top:6px;
+      display:flex;
+      gap:6px;
+      flex-wrap:wrap;
+    }
+    .kbd{
+      font-family:var(--mono);
+      font-size:10px;
+      color:var(--muted);
+      border:1px solid rgba(233,238,245,.14);
+      background:rgba(233,238,245,.04);
+      border-radius:8px;
+      padding:1px 6px;
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Session DL</div>
+    <div class="search" title="Ctrl+Pで検索 / >full でフル幅ビュー / >backup でGmailバックアップ">
+      <span style="opacity:.75">🔎</span>
+      <input id="q" placeholder="Search… 例: session:chatgpt file:zip on:2026-02-10 / >full" />
+      <span class="hint">Ctrl+P</span>
+    </div>
+    <label class="toggle" title="URNトークンがあるファイルだけを記録（default on）">
+      <input id="urnOnly" type="checkbox" />
+      <span><b>urn-only</b></span>
+    </label>
+  </header>
+
+  <main class="main">
+    <div id="list" class="list"></div>
+  </main>
+
+  <section id="sheet" class="sheet" aria-live="polite">
+    <div class="sheetHeader">
+      <div style="min-width:0">
+        <div id="sheetTitle" class="sheetTitle"></div>
+        <div id="sheetSub" class="sheetSub"></div>
+      </div>
+      <div class="kbd">Esc</div>
+    </div>
+
+    <div id="sheetHelp" class="sheetHelp"></div>
+
+    <div id="commits" class="commits"></div>
+  </section>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

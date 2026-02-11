@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Session Downloads (Full)</title>
+  <style>
+    :root{
+      --bg:#0b0d10;
+      --fg:#e9eef5;
+      --muted:rgba(233,238,245,.55);
+      --panel:rgba(233,238,245,.06);
+      --stroke:rgba(233,238,245,.18);
+      --accent:rgba(154,211,255,.9);
+      --shadow:0 10px 30px rgba(0,0,0,.35);
+      --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
+      --sans:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family:var(--sans);
+      background:var(--bg);
+      color:var(--fg);
+      overflow:hidden;
+    }
+    .topbar{
+      height:46px;
+      display:flex;
+      align-items:center;
+      gap:10px;
+      padding:0 10px;
+      border-bottom:1px solid rgba(233,238,245,.1);
+      background:#0b0d10eb;
+      position:sticky;
+      top:0;
+      z-index:10;
+    }
+    .brand{
+      font-size:12px;
+      letter-spacing:.2px;
+      color:var(--muted);
+      user-select:none;
+      white-space:nowrap;
+    }
+    .search{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      border:1px solid rgba(233,238,245,.16);
+      background:rgba(233,238,245,.06);
+      border-radius:10px;
+      padding:6px 10px;
+      min-width:240px;
+      max-width:720px;
+      flex:1;
+    }
+    .search input{
+      flex:1;
+      border:0;
+      outline:none;
+      background:transparent;
+      color:var(--fg);
+      font-size:12px;
+    }
+    .hint{
+      font-size:11px;
+      color:var(--muted);
+      white-space:nowrap;
+      user-select:none;
+    }
+    .main{
+      height:calc(100% - 46px);
+      display:flex;
+      min-height:0;
+    }
+    .col{
+      min-height:0;
+      overflow:auto;
+      padding:10px;
+    }
+    .colTree{
+      width:300px;
+      border-right:1px solid rgba(233,238,245,.10);
+    }
+    .colSessions{
+      width:420px;
+      border-right:1px solid rgba(233,238,245,.10);
+    }
+    .colDetails{
+      flex:1;
+    }
+
+    .sectionTitle{
+      font-size:11px;
+      color:var(--muted);
+      letter-spacing:.2px;
+      margin:2px 2px 8px;
+      user-select:none;
+    }
+
+    .treeNode{
+      border:1px solid rgba(233,238,245,.10);
+      background:rgba(233,238,245,.03);
+      border-radius:10px;
+      padding:8px 10px;
+      margin:6px 0;
+      cursor:pointer;
+      user-select:none;
+    }
+    .treeNode:hover{ background:rgba(233,238,245,.08); }
+    .treeNode.selected{ border-color:rgba(154,211,255,.45); }
+
+    .treeLabel{
+      font-family:var(--mono);
+      font-size:11px;
+      color:var(--fg);
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .treeMeta{
+      margin-top:4px;
+      font-size:10px;
+      color:var(--muted);
+      font-family:var(--mono);
+    }
+
+    .card{
+      border:1px solid rgba(233,238,245,.14);
+      background:rgba(233,238,245,.06);
+      border-radius:12px;
+      padding:10px;
+      cursor:pointer;
+      user-select:none;
+      margin-bottom:8px;
+    }
+    .card:hover{ background:rgba(233,238,245,.10); }
+    .card.selected{ border-color:rgba(154,211,255,.45); }
+
+    .title{
+      font-size:13px;
+      font-weight:650;
+      line-height:1.2;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      max-width:100%;
+    }
+    .sub{
+      margin-top:4px;
+      font-size:11px;
+      color:var(--muted);
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      font-family:var(--mono);
+    }
+
+    .detailsHeader{
+      border:1px solid rgba(233,238,245,.12);
+      background:rgba(233,238,245,.03);
+      border-radius:12px;
+      padding:10px;
+    }
+    .detailsTitle{
+      font-size:14px;
+      font-weight:750;
+      margin:0;
+      padding:0;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .detailsSub{
+      margin-top:6px;
+      font-size:11px;
+      color:var(--muted);
+      font-family:var(--mono);
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+
+    .commits{
+      margin-top:10px;
+      overflow:auto;
+      border:1px solid rgba(233,238,245,.10);
+      background:rgba(233,238,245,.03);
+      border-radius:12px;
+      padding:8px;
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      height:calc(100% - 86px);
+    }
+    .commit{
+      border:1px solid rgba(233,238,245,.10);
+      background:rgba(0,0,0,.10);
+      border-radius:10px;
+      padding:8px;
+    }
+    .commitTop{
+      display:flex;
+      justify-content:space-between;
+      gap:8px;
+    }
+    .commitFile{
+      font-size:12px;
+      font-weight:650;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      max-width:100%;
+    }
+    .commitTime{
+      font-size:10px;
+      color:var(--muted);
+      white-space:nowrap;
+      font-family:var(--mono);
+    }
+    .commitMeta{
+      margin-top:6px;
+      display:flex;
+      gap:6px;
+      flex-wrap:wrap;
+    }
+    .pill{
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      border:1px solid rgba(233,238,245,.16);
+      background:rgba(233,238,245,.03);
+      border-radius:999px;
+      padding:3px 8px;
+      font-size:10px;
+      color:var(--muted);
+      font-family:var(--mono);
+    }
+    .pill strong{ color:var(--fg); font-weight:700; }
+    .kbd{
+      font-family:var(--mono);
+      font-size:10px;
+      color:var(--muted);
+      border:1px solid rgba(233,238,245,.14);
+      background:rgba(233,238,245,.04);
+      border-radius:8px;
+      padding:1px 6px;
+    }
+    @media (max-width: 980px){
+      .colTree{ display:none; }
+      .colSessions{ width:360px; }
+    }
+    @media (max-width: 780px){
+      .main{ flex-direction:column; }
+      .colSessions{ width:auto; border-right:none; border-bottom:1px solid rgba(233,238,245,.10); }
+      .commits{ height:auto; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Session DL — Full</div>
+    <div class="search" title="Ctrl+Pで検索 / Escで閉じる(戻る)">
+      <span style="opacity:.75">🔎</span>
+      <input id="q" placeholder="Search… 例: urn:sessions file:zip after:2026-02-01 / >close" />
+      <span class="hint">Ctrl+P</span>
+    </div>
+    <span class="kbd">Esc</span>
+  </header>
+
+  <main class="main">
+    <aside class="col colTree">
+      <div class="sectionTitle">URN tree</div>
+      <div id="tree"></div>
+    </aside>
+
+    <section class="col colSessions">
+      <div class="sectionTitle">Sessions</div>
+      <div id="sessions"></div>
+    </section>
+
+    <section class="col colDetails">
+      <div class="sectionTitle">Details</div>
+      <div id="details"></div>
+      <div id="commits" class="commits"></div>
+    </section>
+  </main>
+
+  <script type="module" src="full.js"></script>
+</body>
+</html>

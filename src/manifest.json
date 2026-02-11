@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Session Download Commits (Side Panel)",
+  "version": "0.4.4",
+  "description": "Track downloads per session URL and build commit-like history. Side Panel UI.",
+  "permissions": [
+    "clipboardWrite",
+    "downloads",
+    "storage",
+    "tabs",
+    "sidePanel"
+  ],
+  "action": {
+    "default_title": "Session downloads"
+  },
+  "background": {
+    "service_worker": "sw.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "options_page": "options.html",
+  "icons": {
+    "16": "assets/icon-16.png",
+    "32": "assets/icon-32.png",
+    "128": "assets/icon-128.png"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+S"
+      },
+      "description": "Activate extension"
+    }
+  }
+}
